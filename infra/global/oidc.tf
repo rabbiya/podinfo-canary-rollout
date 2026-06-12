@@ -52,7 +52,8 @@ resource "aws_iam_role_policy" "github_actions" {
           "ecr:UploadLayerPart",
           "ecr:CompleteLayerUpload",
           "ecr:BatchGetImage",
-          "ecr:GetDownloadUrlForLayer"
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:DescribeImages"
         ]
         Resource = aws_ecr_repository.podinfo.arn
       },
