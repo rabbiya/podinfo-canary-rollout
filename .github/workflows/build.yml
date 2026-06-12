@@ -1,0 +1,78 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:  
+
+permissions:
+  id-token: write    
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPO: podinfo
+
+jobs:
+  build-sign-push:
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # AWS login via OIDC 
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: push
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/$ECR_REPO:${GITHUB_SHA::8}"
+          docker build -t "$IMAGE" app/
+          docker push "$IMAGE"
+          # ECR Digest  
+          DIGEST=$(aws ecr describe-images --repository-name $ECR_REPO \
+            --image-ids imageTag=${GITHUB_SHA::8} \
+            --query 'imageDetails[0].imageDigest' --output text)
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Image digest: $DIGEST"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      # Keyless signing: GitHub's OIDC-based identity
+      - name: Sign image (cosign keyless)
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          cosign sign --yes "$REGISTRY/$ECR_REPO@${{ steps.push.outputs.digest }}"
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate SBOM
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          syft "$REGISTRY/$ECR_REPO@${{ steps.push.outputs.digest }}" \
+            -o spdx-json > sbom.spdx.json
+
+      - name: Upload SBOM as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ steps.push.outputs.digest }}
+          path: sbom.spdx.json
