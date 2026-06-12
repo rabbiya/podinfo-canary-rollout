@@ -11,7 +11,8 @@ FROM gcr.io/distroless/static-debian12:nonroot
  
 COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.8.4 /lambda-adapter /opt/extensions/lambda-adapter
 
-COPY --from=build /podinfo /podinfo
+#COPY --from=build /podinfo /podinfo
+COPY --from=build --chmod=755 /podinfo /podinfo
 
 ENV PORT=9898 \
     AWS_LWA_PORT=9898 \
