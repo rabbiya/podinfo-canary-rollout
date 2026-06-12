@@ -42,8 +42,7 @@ jobs:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
           IMAGE="$REGISTRY/$ECR_REPO:${GITHUB_SHA::8}"
-          docker build -t "$IMAGE" app/
-          docker push "$IMAGE"
+          docker buildx build --platform linux/amd64 --provenance=false --sbom=false -t "$IMAGE" --push app/
           # ECR Digest  
           DIGEST=$(aws ecr describe-images --repository-name $ECR_REPO \
             --image-ids imageTag=${GITHUB_SHA::8} \
