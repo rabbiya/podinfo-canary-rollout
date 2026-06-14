@@ -81,8 +81,7 @@ jobs:
 
       - name: Smoke test
         run: |
-          API_ID=$(aws apigatewayv2 get-apis --query "Items[?Name=='podinfo-api'].ApiId" --output text)
-          URL="https://$API_ID.execute-api.$AWS_REGION.amazonaws.com"
+          URL="https://jwd9f2tx7h.execute-api.us-east-1.amazonaws.com"
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL/healthz")
           echo "Health check: HTTP $STATUS"
           if [ "$STATUS" -ge 400 ]; then

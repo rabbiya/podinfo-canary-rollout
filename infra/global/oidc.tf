@@ -64,7 +64,9 @@ resource "aws_iam_role_policy" "github_actions" {
           "lambda:PublishVersion",
           "lambda:GetFunction",
           "lambda:UpdateAlias",
-          "lambda:GetAlias"
+          "lambda:GetAlias",
+          "lambda:GetFunctionConfiguration",
+          "lambda:WaitForFunctionUpdated"
         ]
         Resource = "*"
       },
