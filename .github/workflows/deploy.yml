@@ -1,0 +1,92 @@
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      digest:
+        description: 'Image digest (sha256:...) jo deploy karna hai'
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPO: podinfo
+  FUNCTION: podinfo
+  ALIAS: live
+
+jobs:
+  deploy-canary:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      # POLICY GATE: cant deploy unsigned image
+      - name: Verify signature before deploy
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          IMAGE="$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO@${{ inputs.digest }}"
+          aws ecr get-login-password | cosign login --username AWS --password-stdin "$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com"
+          cosign verify \
+            --certificate-identity-regexp "https://github.com/${{ github.repository }}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$IMAGE"
+          echo "✅ Signature valid — deploy allowed"
+
+      - name: Publish new Lambda version
+        id: version
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          IMAGE="$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO@${{ inputs.digest }}"
+
+          # Sve Current alias version (rollback reference)
+          CURRENT=$(aws lambda get-alias --function-name $FUNCTION --name $ALIAS --query FunctionVersion --output text)
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+
+          # New code + New version
+          aws lambda update-function-code --function-name $FUNCTION --image-uri "$IMAGE"
+          aws lambda wait function-updated --function-name $FUNCTION
+          TARGET=$(aws lambda publish-version --function-name $FUNCTION --query Version --output text)
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "Shifting: v$CURRENT -> v$TARGET"
+
+      - name: Start CodeDeploy canary deployment
+        id: deploy
+        run: |
+          APPSPEC=$(cat <<EOF
+          {"version":0.0,"Resources":[{"podinfo":{"Type":"AWS::Lambda::Function","Properties":{"Name":"$FUNCTION","Alias":"$ALIAS","CurrentVersion":"${{ steps.version.outputs.current }}","TargetVersion":"${{ steps.version.outputs.target }}"}}}]}
+          EOF
+          )
+          DEPLOYMENT_ID=$(aws deploy create-deployment \
+            --application-name podinfo-lambda \
+            --deployment-group-name podinfo-lambda-dg \
+            --revision "{\"revisionType\":\"AppSpecContent\",\"appSpecContent\":{\"content\":$(echo "$APPSPEC" | jq -Rs .)}}" \
+            --query deploymentId --output text)
+          echo "id=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"
+          echo "Canary started: $DEPLOYMENT_ID (10% -> 5 min -> 100%)"
+
+      - name: Wait for canary to finish (auto-rollback on alarm)
+        run: |
+          aws deploy wait deployment-successful --deployment-id ${{ steps.deploy.outputs.id }}
+          echo "✅ Canary complete — 100% traffic on new version"
+
+      - name: Smoke test
+        run: |
+          API_ID=$(aws apigatewayv2 get-apis --query "Items[?Name=='podinfo-api'].ApiId" --output text)
+          URL="https://$API_ID.execute-api.$AWS_REGION.amazonaws.com"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL/healthz")
+          echo "Health check: HTTP $STATUS"
+          if [ "$STATUS" -ge 400 ]; then
+            echo "❌ Smoke test failed"
+            exit 1
+          fi
+          echo "✅ Smoke test passed"
