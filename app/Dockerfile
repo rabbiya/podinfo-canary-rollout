@@ -1,4 +1,3 @@
-#
 FROM golang:1.23-alpine AS build
 RUN apk add --no-cache git
 RUN git clone --depth 1 --branch 6.7.1 https://github.com/stefanprodan/podinfo.git /src
